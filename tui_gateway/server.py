@@ -1,3 +1,4 @@
+import asyncio
 import atexit
 import concurrent.futures
 import contextlib
@@ -254,6 +255,7 @@ class _SlashWorker:
         self._seq = 0
         self.stderr_tail: list[str] = []
         self.stdout_queue: queue.Queue[dict | None] = queue.Queue()
+        self.send_queue: queue.Queue[dict] = queue.Queue()  # type: "send" msgs from worker
 
         argv = [
             sys.executable,
@@ -278,11 +280,16 @@ class _SlashWorker:
         )
         threading.Thread(target=self._drain_stdout, daemon=True).start()
         threading.Thread(target=self._drain_stderr, daemon=True).start()
+        threading.Thread(target=self._process_send_queue, daemon=True).start()
 
     def _drain_stdout(self):
         for line in self.proc.stdout or []:
             try:
-                self.stdout_queue.put(json.loads(line))
+                msg = json.loads(line)
+                if isinstance(msg, dict) and msg.get("type") == "send":
+                    self.send_queue.put(msg)
+                else:
+                    self.stdout_queue.put(msg)
             except json.JSONDecodeError:
                 continue
         self.stdout_queue.put(None)
@@ -291,6 +298,77 @@ class _SlashWorker:
         for line in self.proc.stderr or []:
             if text := line.rstrip("\n"):
                 self.stderr_tail = (self.stderr_tail + [text])[-80:]
+
+    def _process_send_queue(self):
+        """Background thread: process ``type: \"send\"`` messages from worker stdout.
+
+        Reads send requests from ``self.send_queue``, forwards them to the
+        in-process yuanbao adapter via ``_gateway_runner_ref()``, and writes
+        the result back to the specified response file.
+        """
+        while True:
+            msg = self.send_queue.get()
+            if msg is None:
+                break
+
+            platform = msg.get("platform", "")
+            chat_id = msg.get("chat_id", "")
+            message = msg.get("message", "")
+            media_files = msg.get("media_files") or []
+            req_id = msg.get("id", "")
+            resp_path = msg.get("resp_path", "")
+
+            if platform != "yuanbao":
+                self._write_send_response(req_id, resp_path, {"error": f"Unknown platform: {platform}"})
+                continue
+
+            runner = None
+            loop = None
+            try:
+                from gateway.run import _gateway_runner_ref
+                runner = _gateway_runner_ref()
+                if runner is not None:
+                    loop = getattr(runner, "_gateway_loop", None)
+            except Exception:
+                pass
+
+            if loop is not None and runner is not None:
+                # Schedule the send on the gateway's event loop
+                try:
+                    future = asyncio.run_coroutine_threadsafe(
+                        self._do_send_via_runner(runner, chat_id, message, media_files),
+                        loop,
+                    )
+                    result = future.result(timeout=30)
+                except Exception as e:
+                    result = {"error": f"Send failed: {e}"}
+            else:
+                result = {"error": "Gateway runner not available in this process"}
+
+            self._write_send_response(req_id, resp_path, result)
+
+    async def _do_send_via_runner(self, runner, chat_id, message, media_files):
+        """Send via the gateway runner's yuanbao adapter."""
+        from gateway.config import Platform
+        adapter = runner.adapters.get(Platform.YUANBAO)
+        if adapter is None:
+            return {"error": "Yuanbao adapter not found on gateway runner"}
+        from gateway.platforms.yuanbao import send_yuanbao_direct
+        try:
+            return await send_yuanbao_direct(adapter, chat_id, message, media_files=media_files or None)
+        except Exception as e:
+            return {"error": f"Send failed: {e}"}
+
+    def _write_send_response(self, req_id: str, resp_path: str, result: dict):
+        """Write a send response to the specified file path."""
+        if not resp_path:
+            return
+        try:
+            parent = Path(resp_path).parent
+            parent.mkdir(parents=True, exist_ok=True)
+            Path(resp_path).write_text(json.dumps(result, ensure_ascii=False), encoding="utf-8")
+        except Exception:
+            pass
 
     def run(self, command: str) -> str:
         if self.proc.poll() is not None:

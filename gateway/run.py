@@ -7049,6 +7049,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 except Exception as _e:
                     logger.debug("pre-drain mark_resume_pending failed for %s: %s", _sk, _e)
 
+            # Kill tool subprocesses BEFORE draining agents.  If any agent
+            # is stuck on a terminal command (e.g. because the CLI session
+            # shares the same terminal backend), killing it here lets the
+            # agent's tool call return an error immediately, so the drain
+            # completes in seconds instead of hanging for the full timeout.
+            _kill_tool_subprocesses("pre-drain")
+
             _drain_started_at = time.monotonic()
             active_agents, timed_out = await self._drain_active_agents(timeout)
             logger.info(

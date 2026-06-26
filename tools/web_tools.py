@@ -149,7 +149,7 @@ def _get_backend() -> str:
     keys manually without running setup.
     """
     configured = (_load_web_config().get("backend") or "").lower().strip()
-    if configured in {"parallel", "firecrawl", "tavily", "exa", "searxng", "brave-free", "ddgs", "xai"}:
+    if configured in {"parallel", "firecrawl", "tavily", "exa", "searxng", "brave-free", "ddgs", "xai", "trafilatura"}:
         return configured
 
     # Fallback for manual / legacy config — pick the highest-priority
@@ -167,6 +167,7 @@ def _get_backend() -> str:
         ("firecrawl", _is_tool_gateway_ready()),
         ("searxng", _has_env("SEARXNG_URL")),
         ("brave-free", _has_env("BRAVE_SEARCH_API_KEY")),
+        ("trafilatura", _is_trafilatura_available()),
         ("ddgs", _ddgs_package_importable()),
     )
     for backend, available in backend_candidates:
@@ -230,6 +231,8 @@ def _is_backend_available(backend: str) -> bool:
         return _has_env("BRAVE_SEARCH_API_KEY")
     if backend == "ddgs":
         return _ddgs_package_importable()
+    if backend == "trafilatura":
+        return _is_trafilatura_available()
     if backend == "xai":
         # Cheap probe — env var OR auth.json has OAuth tokens. Must not
         # call resolve_xai_http_credentials() here because the OAuth path
@@ -253,6 +256,21 @@ def _ddgs_package_importable() -> bool:
     """
     try:
         import ddgs  # noqa: F401
+        return True
+    except ImportError:
+        return False
+
+
+def _is_trafilatura_available() -> bool:
+    """Return True when the ``trafilatura`` library is installed.
+
+    trafilatura is the extract-only backend — no API key, no env var,
+    just a ``pip install trafilatura``.  Wrapped in a helper so both
+    the auto-detect cascade and ``_is_backend_available`` share the
+    same check, and tests can monkeypatch a single symbol.
+    """
+    try:
+        import trafilatura  # noqa: F401
         return True
     except ImportError:
         return False
@@ -784,7 +802,7 @@ def _ensure_web_plugins_loaded() -> None:
         logger.warning("Web plugin discovery failed (non-fatal): %s", exc)
 
 
-def web_search_tool(query: str, limit: int = 5) -> str:
+def web_search_tool(query: str, limit: int = 30) -> str:
     """
     Search the web for information using available search API backend.
 
@@ -1185,11 +1203,11 @@ async def web_extract_tool(
 def check_web_api_key() -> bool:
     """Check whether the configured web backend is available."""
     configured = _load_web_config().get("backend", "").lower().strip()
-    if configured in {"exa", "parallel", "firecrawl", "tavily", "searxng", "brave-free", "ddgs", "xai"}:
+    if configured in {"exa", "parallel", "firecrawl", "tavily", "searxng", "brave-free", "ddgs", "xai", "trafilatura"}:
         return _is_backend_available(configured)
     return any(
         _is_backend_available(backend)
-        for backend in ("exa", "parallel", "firecrawl", "tavily", "searxng", "brave-free", "ddgs", "xai")
+        for backend in ("exa", "parallel", "firecrawl", "tavily", "searxng", "brave-free", "ddgs", "xai", "trafilatura")
     )
 
 
@@ -1326,10 +1344,10 @@ WEB_SEARCH_SCHEMA = {
             },
             "limit": {
                 "type": "integer",
-                "description": "Maximum number of results to return. Defaults to 5.",
+                "description": "Maximum number of results to return. Defaults to 30.",
                 "minimum": 1,
                 "maximum": 100,
-                "default": 5
+                "default": 30
             }
         },
         "required": ["query"]
@@ -1357,7 +1375,7 @@ registry.register(
     name="web_search",
     toolset="web",
     schema=WEB_SEARCH_SCHEMA,
-    handler=lambda args, **kw: web_search_tool(args.get("query", ""), limit=args.get("limit", 5)),
+    handler=lambda args, **kw: web_search_tool(args.get("query", ""), limit=args.get("limit", 30)),
     check_fn=check_web_api_key,
     requires_env=_web_requires_env(),
     emoji="🔍",

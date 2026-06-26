@@ -1653,6 +1653,9 @@ async def _send_yuanbao(chat_id, message, media_files=None):
     cannot create a throwaway client.  We obtain the running singleton from
     the adapter module itself (``get_active_adapter``).
 
+    When running as a TUI slash_worker subprocess, falls back to IPC via
+    stdout/stdin with the parent gateway process.
+
     chat_id format:
       - Group: "group:<group_code>"
       - DM:    "direct:<account_id>" or just "<account_id>"
@@ -1664,15 +1667,114 @@ async def _send_yuanbao(chat_id, message, media_files=None):
 
     adapter = get_active_adapter()
     if adapter is None:
-        return _error(
-            "Yuanbao adapter is not running. "
-            "Start the gateway with yuanbao platform enabled first."
-        )
+        # Try IPC to parent gateway (TUI slash_worker subprocess mode)
+        session_key = os.environ.get("HERMES_SESSION_KEY", "")
+        if session_key:
+            return await _send_yuanbao_via_ipc(chat_id, message, media_files)
+        # Fall back to _send_via_adapter (handles cron/kanban workers)
+        return await _send_yuanbao_via_adapter(chat_id, message, media_files)
 
     try:
         return await send_yuanbao_direct(adapter, chat_id, message, media_files=media_files)
     except Exception as e:
         return _error(f"Yuanbao send failed: {e}")
+
+
+async def _send_yuanbao_via_adapter(chat_id, message, media_files=None):
+    """Try _send_via_adapter as fallback (for cron/kanban workers)."""
+    try:
+        from gateway.config import Platform
+    except ImportError:
+        return _error(
+            "Yuanbao adapter is not running. "
+            "Start the gateway with yuanbao platform enabled first."
+        )
+    # Build a minimal PlatformConfig from env
+    import os
+    app_id = os.environ.get("YUANBAO_APP_ID", "")
+    app_secret = os.environ.get("YUANBAO_APP_SECRET", "")
+    if not app_id or not app_secret:
+        return _error(
+            "Yuanbao adapter is not running and YUANBAO_APP_ID/APP_SECRET "
+            "are not set in environment."
+        )
+    from gateway.config import PlatformConfig
+    pconfig = PlatformConfig(
+        enabled=True,
+        extra={
+            "app_id": app_id,
+            "app_secret": app_secret,
+        },
+    )
+    return await _send_via_adapter(
+        Platform.YUANBAO,
+        pconfig,
+        chat_id,
+        message,
+        media_files=media_files,
+    )
+
+
+async def _send_yuanbao_via_ipc(chat_id, message, media_files=None):
+    """Send Yuanbao message via IPC to parent TUI gateway process.
+
+    The agent subprocess writes a JSON request to stdout and a response-file
+    path.  The parent ``_SlashWorker._drain_stdout`` routes it to the
+    gateway's yuanbao adapter, then writes a response back to the specified
+    file path.  The agent busy-polls for the file.
+    """
+    import uuid
+    import sys as _sys
+    import tempfile
+    import pathlib
+    import os as _os
+    req_id = str(uuid.uuid4())
+
+    # Create a temp file path for the response (don't create the file yet)
+    resp_dir = pathlib.Path(_os.environ.get("HERMES_HOME", _os.path.expanduser("~/.hermes"))) / ".send_responses"
+    resp_dir.mkdir(parents=True, exist_ok=True)
+    resp_path = resp_dir / f"send_resp_{req_id}.json"
+
+    # Write request to stdout — parent reads this in _drain_stdout
+    request = {
+        "type": "send",
+        "id": req_id,
+        "platform": "yuanbao",
+        "chat_id": chat_id,
+        "message": message,
+        "media_files": media_files or [],
+        "resp_path": str(resp_path),
+    }
+    _sys.stdout.write(json.dumps(request) + "\n")
+    _sys.stdout.flush()
+
+    # Busy-poll for response file
+    loop = asyncio.get_running_loop()
+
+    def _poll_response():
+        import time as _time
+        deadline = _time.monotonic() + 30
+        while _time.monotonic() < deadline:
+            if resp_path.exists():
+                try:
+                    with resp_path.open("r", encoding="utf-8") as f:
+                        result = json.load(f)
+                except Exception as e:
+                    result = {"error": f"Failed to read send response: {e}"}
+                finally:
+                    try:
+                        resp_path.unlink()
+                    except Exception:
+                        pass
+                return result
+            _time.sleep(0.1)
+        return {"error": "timeout waiting for yuanbao send response"}
+
+    try:
+        result = await loop.run_in_executor(None, _poll_response)
+    except Exception as e:
+        result = {"error": f"Yuanbao IPC send failed: {e}"}
+    return result
 
 
 # --- Registry ---
