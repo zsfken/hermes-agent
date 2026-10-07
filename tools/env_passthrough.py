@@ -140,6 +140,16 @@ def get_all_passthrough() -> frozenset[str]:
                      if not _is_hermes_provider_credential(name))
 
 
+# Env names that describe the HOST's outbound route, not a profile credential: every
+# profile reaches the network through the same Clash/WSL listener and no profile's
+# ``.env`` defines its own. The fail-closed scope read has nothing to find for them, so
+# raising (or dropping the value) only stripped the proxy out of sandbox children — the
+# desktop's ``hermes -p X skills install`` action died here under multiplexing. Reachable
+# only when the caller passes no ``fallback`` (with one, the global short-circuit above
+# already wins); a bound scope value is honored, otherwise None.
+_HOST_NETWORK_ENV = frozenset({"HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY"})
+
+
 def resolve_passthrough_value(name: str, fallback: str | None = None) -> str | None:
     """Resolve an allowlisted variable without crossing profile boundaries. ``fallback``
     is what the caller would have forwarded before secret scopes existed (a snapshot of
@@ -153,8 +163,12 @@ def resolve_passthrough_value(name: str, fallback: str | None = None) -> str | N
     # already the caller's effective value (incl. an explicit per-call override).
     if _is_global_env(name) and fallback is not None:
         return fallback
+    scope = current_secret_scope()
+    if name.upper() in _HOST_NETWORK_ENV:
+        scoped = (scope or {}).get(name)
+        return scoped if scoped is not None else fallback
     multiplex_active = is_multiplex_active()
-    if current_secret_scope() is None:
+    if scope is None:
         return get_secret(name) if multiplex_active else fallback
     return get_secret(name, None if multiplex_active else fallback)
 

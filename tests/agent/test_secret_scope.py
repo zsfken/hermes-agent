@@ -564,3 +564,31 @@ class TestUnscopedSecretErrorSignature:
         assert err.secret_name == ""
         assert err.developer_detail.startswith("get_secret('X')")
         assert "get_secret" not in str(err)
+
+
+class TestHostNetworkPassthroughUnderMultiplex:
+    """Proxy vars are host network settings, not profile secrets: a desktop action that
+    builds a child env (``hermes -p X skills install``) must not die in
+    ``resolve_passthrough_value`` when multiplexing is on with no scope installed."""
+
+    PROXY_NAMES = ("https_proxy", "HTTPS_PROXY", "http_proxy", "HTTP_PROXY",
+                   "no_proxy", "NO_PROXY", "all_proxy", "ALL_PROXY")
+
+    def test_proxy_names_are_global_env(self):
+        for name in self.PROXY_NAMES:
+            assert ss._is_global_env(name), name
+
+    def test_unscoped_proxy_passthrough_no_longer_raises(self, monkeypatch):
+        from tools.env_passthrough import resolve_passthrough_value
+        monkeypatch.setenv("https_proxy", "http://127.0.0.1:7993")
+        ss.set_multiplex_active(True)
+        value = resolve_passthrough_value("https_proxy", "http://127.0.0.1:7993")
+        assert value == "http://127.0.0.1:7993"
+
+    def test_real_provider_credential_still_fails_closed(self, monkeypatch):
+        """The relaxation is name-scoped: a genuine credential must keep raising."""
+        from tools.env_passthrough import resolve_passthrough_value
+        monkeypatch.setenv("EXA_API_KEY", "sk-leak")
+        ss.set_multiplex_active(True)
+        with pytest.raises(ss.UnscopedSecretError):
+            resolve_passthrough_value("EXA_API_KEY", "sk-leak")

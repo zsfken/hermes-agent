@@ -198,6 +198,13 @@ _GLOBAL_ENV_EXACT = frozenset({
     "GATEWAY_RELAY_PLATFORMS", "GATEWAY_RELAY_BOT_IDS",
     "GATEWAY_RELAY_ROUTE_KEYS", "GATEWAY_RELAY_INSTANCE_ID",
     "GATEWAY_RELAY_WAKE_URL", "GATEWAY_RELAY_DISPLAY_NAME",
+    # Outbound-network settings. A proxy route is a property of the HOST (the
+    # one Clash/WSL listener this machine has), not a per-profile credential —
+    # no profile's ``.env`` defines its own. Leaving them profile-scoped made
+    # every desktop action that builds a child env (``hermes -p X skills
+    # install``) die in ``resolve_passthrough_value`` under multiplexing.
+    "HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy",
+    "ALL_PROXY", "all_proxy", "NO_PROXY", "no_proxy",
 })
 _GLOBAL_ENV_PREFIXES = (
     "HERMES_KANBAN_",
