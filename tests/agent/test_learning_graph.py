@@ -100,3 +100,29 @@ def test_foreground_created_skill_is_in_journey_before_first_use(tmp_path):
 
     assert "fresh-learn-skill" in skill_nodes
     assert "hand-written" not in skill_nodes
+
+
+def test_memory_node_use_count_counts_overlapping_skills(tmp_path):
+    """A memory card's useCount is its overlap degree — how many learned skills
+    its text lexically hits — not a placeholder zero; an unrelated card stays 0."""
+    from tools import skill_usage
+
+    home = tmp_path / ".hermes"
+    (home / "memories").mkdir(parents=True)
+    (home / "memories" / "MEMORY.md").write_text(
+        "pytest xdist quirks\n§\n🦄 zzqqxx marker", encoding="utf-8")
+    (home / "skills" / "demo" / "pytest").mkdir(parents=True)
+    (home / "skills" / "demo" / "pytest" / "SKILL.md").write_text(
+        "---\nname: pytest\ndescription: d.\n---\n\n# pytest\n", encoding="utf-8")
+
+    token = set_hermes_home_override(home)
+    try:
+        skill_usage.record_created("pytest", agent_created=False)
+        graph = learning_graph.build_learning_graph()
+    finally:
+        reset_hermes_home_override(token)
+
+    mem_nodes = [n for n in graph["nodes"] if n["kind"] == "memory"]
+    by_title = {n["label"]: n for n in mem_nodes}
+    assert by_title["pytest xdist quirks"]["useCount"] >= 1   # skill-name hit
+    assert by_title["🦄 zzqqxx marker"]["useCount"] == 0      # no overlap

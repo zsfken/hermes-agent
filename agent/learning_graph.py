@@ -235,14 +235,27 @@ def build_learning_graph() -> dict[str, Any]:
             "useCount": n.use_count, "state": n.state, "createdBy": n.created_by, "pinned": n.pinned,
         }
         for n in learned_skills.values()
-    ] + [
-        {
-            "id": memory_node_id(card, i), "label": card["title"], "kind": "memory",
-            "memorySource": card["source"], "timestamp": card.get("timestamp"), "category": "memory",
-            "useCount": 0, "state": "active", "createdBy": "memory", "pinned": False,
-        }
-        for i, card in enumerate(memory_cards)
     ]
+    # Memory chunks have no per-chunk "use count" — they are passively
+    # injected every turn. Surface their reach as the number of skill nodes
+    # their text overlaps with, so the graph distinguishes a one-topic
+    # memory from a broadly-applicable one. The ``scored[:4]`` saturation in
+    # _memory_skill_edges still caps the signal; raise the cap there if
+    # finer resolution is ever needed.
+    mem_ids = [memory_node_id(card, i) for i, card in enumerate(memory_cards)]
+    mem_out_degree = {mid: 0 for mid in mem_ids}
+    for src, _dst in memory_edges:
+        if src in mem_out_degree:
+            mem_out_degree[src] += 1
+    for i, card in enumerate(memory_cards):
+        mid = mem_ids[i]
+        graph_nodes.append(
+            {
+                "id": mid, "label": card["title"], "kind": "memory",
+                "memorySource": card["source"], "timestamp": card.get("timestamp"), "category": "memory",
+                "useCount": mem_out_degree[mid], "state": "active", "createdBy": "memory", "pinned": False,
+            }
+        )
     return {
         "nodes": graph_nodes,
         "edges": [{"source": a, "target": b} for a, b in skill_edges + memory_edges],
