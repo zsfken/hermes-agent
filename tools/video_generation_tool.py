@@ -174,7 +174,8 @@ def _handle_video_generate(args: Dict[str, Any], **_kw: Any) -> str:
         "negative_prompt": (args.get("negative_prompt") or "").strip() or None,
         "audio": _coerce_bool(args.get("audio")),
         "seed": _coerce_int(args.get("seed")),
-        "upscale": _coerce_bool(args.get("upscale"))}
+        "upscale": _coerce_bool(args.get("upscale")),
+        "num_inference_steps": _coerce_int(args.get("num_inference_steps"))}
 
     # Soft validation — providers do their own; our surface never accepts image-only.
     if not prompt:
@@ -239,6 +240,13 @@ _CAPABILITY_PARAMS = (
         "description": (
             "High-resolution pass via the backend's video upscaler "
             "(~2x, extra cost/latency). Omit for native resolution."
+        ),
+    }),
+    ("supports_num_inference_steps", "num_inference_steps", {
+        "type": "integer",
+        "description": (
+            "Optional inference/sampling steps. Higher = better "
+            "quality but slower. Provider clamps to supported range."
         ),
     }),
 )
