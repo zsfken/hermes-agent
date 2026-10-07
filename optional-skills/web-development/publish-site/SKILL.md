@@ -137,6 +137,7 @@ Cloudflare Pages and Netlify also keep per-deploy history in their dashboards ("
 
 ## Pitfalls
 
+- **Default branch is `master`, not `main`.** Older git configs init `master`; the Pages API 422s with "The main branch must exist". Rename first: `git branch -m master main && git push -u origin main`.
 - **SPA routes 404 on GitHub Pages.** Pages has no rewrite rules. Copy `index.html` to `404.html` in the output dir (`cp dist/index.html dist/404.html`) so client-side routing recovers. Cloudflare Pages and Netlify handle SPAs via `_redirects` (`/* /index.html 200`).
 - **GitHub Pages build lag.** The site can take 1–10 minutes to appear after the first enable, and ~1 minute per subsequent push. Don't declare failure on the first 404 — poll `curl` a few times before investigating.
 - **Case-sensitive paths.** Pages hosts are case-sensitive Linux; a site that worked on macOS/Windows can 404 on assets referenced as `Logo.PNG` but committed as `logo.png`. Grep the HTML for mismatched casing when an asset 404s.
@@ -151,7 +152,7 @@ Do NOT report success from the deploy log alone. Before telling the user anythin
 
 1. `curl -sS -o /dev/null -w '%{http_code}' <live-url>` returns `200` (retry over ~2 minutes for a first GitHub Pages deploy).
 2. `curl -sS <live-url> | head -30` shows the expected `index.html` content — optionally confirm markup with `web_extract` on the live URL.
-3. For SPAs, also curl one deep route (e.g. `/about`) and confirm it returns `200`, not `404`.
+3. For SPAs, also curl one deep route (e.g. `/about`): Cloudflare/Netlify with `_redirects` return `200`; GitHub Pages returns `404` status but the body must be your `404.html` SPA entry (that IS the recovery mechanism — don't treat the 404 as failure).
 4. `git tag --list 'deploy-*'` shows the tag for this deploy.
 
 Then report the live URL to the user, along with the deploy tag they can roll back to.
